@@ -5,14 +5,21 @@
 import streamlit as st
 from PIL import Image
 import pandas as pd
+import numpy as np
 
 from graphs import default_gauge
 from graphs import plotly_waterfall
-from graphs import plot_bar_default
+from graphs import plot_categ_bars
 from graphs import plot_bars
+from graphs import plot_distribution
+from graphs import plot_repartition
+from functions import predict_modified
+from functions import transform_shap
   
 URL = 'http://localhost:8501'
 path = 'C:\\Users\\Alexandre\\Desktop\\Dashboard_Test\\'
+
+#  streamlit run C:/Users/Alexandre/Desktop/Dashboard_Test/dashboard_test.py
 
 def main():
     
@@ -61,6 +68,13 @@ def main():
         data = data.set_index('SK_ID_CURR')
         return data
     
+    @st.cache
+    def get_value(sk_id, var):
+        #chargement des données
+        data = load_data()
+        value = data.loc[sk_id][var]
+        return value
+    
     #--------------------------------------------------------------------------
     ### Configuration de la page streamlit
     #--------------------------------------------------------------------------
@@ -103,7 +117,8 @@ def main():
     #--------------------------------------------------------------------------
     
     menu=['Capacité de remboursement',
-          'Informations relatives au client']
+          'Informations relatives au client',
+          'Modification des paramètres']
     
     radio = st.sidebar.radio("Renseignements", menu)
     
@@ -171,10 +186,9 @@ def main():
         
         
         st.header('__Interprétabilité de la prédiction de défaut de paiement__')
-        left_col, right_col = st.beta_columns(2)
         
         #Selection du nombre de top variables à afficher pour le waterfall plot
-        n_feats = left_col.slider(
+        n_feats = st.slider(
                 "Nombre de variables les plus influentes sur la prédiction du modèle",
                 min_value=5,
                 max_value=30,
@@ -186,34 +200,242 @@ def main():
         #Affichage du waterfall plot pour l'interprétabilité de la prédiction
         shap_series = get_shap_values(select_id)
         fig = plotly_waterfall(select_id, shap_series, n_feats=n_feats)[0]
-        left_col.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
+        
+        
+        #Explication du graphique
+        wat_exp = st.beta_expander("Plus d'informations à propos de ce \
+                                         graphique")
+        wat_exp.write("_Ce graphique représente l'influence des variables\
+                        sur la prédiction de probabilité de difficulté de\
+                        paiement. En partant du bas du graphique:_")
+        wat_exp.write("_- Au départ on se situe à 50, ce qui correspond à \
+                        la probabilit de base de 50%._")
+        wat_exp.write("_- Chaque barre correspond à l'influence d'une\
+                        variable sur la capcité de remboursement du client.\
+                        Si la barre est rouge, cela veut dire que \
+                        la valeur de la variable est en sa \
+                        défaveur. Si la barre est verte, cela veut dire que la\
+                        valeur de la variable est en sa faveur. Plus la barre \
+                        est longue, plus la variable est impactante._")
+        wat_exp.write("_- En haut du graphique, la barre s'arrête au niveau de\
+                         la probabilté de difficulté de paiement totale du \
+                         client._")
         
         #Choix de la variable à afficher dans le graphique
         VARS = plotly_waterfall(select_id, shap_series, n_feats=n_feats)[1] 
-        var = right_col.selectbox('Sélection de la variable à afficher', VARS)
+        var = st.selectbox('Sélection de la variable à afficher', VARS)
         
-        #Cargement des données
+        #Chargement des données
         data = load_data()
         
-        if data[var].nunique() > 2:
+        if data[var].dtype == 'float64' and data[var].nunique() > 2:
             
             #Selection du nombre de top variables à afficher pour le waterfall plot
-            n_bins = right_col.slider(
+            n_bins = st.slider(
                     "Nombre de barres du graphique ci-dessous",
-                    min_value=2,
-                    max_value=110,
+                    min_value=3,
+                    max_value=30,
                     value=10,
                     step=1,
-                    help="Sélectionnez entre 2 et 100 barres à afficher"
+                    help="Sélectionnez entre 3 et 30 barres à afficher"
                     )
+            
             #Affichage du graphique
-            bars = plot_bar_default(data, var, select_id, n_bins=n_bins)
-            right_col.plotly_chart(bars, use_container_width=True)
+            bars = plot_bars(data, var, select_id, n_bins=n_bins+1)
+            st.plotly_chart(bars, use_container_width=True)
             
         else:
             #Affichage du graphique
-            bars = plot_bars(data, var, select_id)[0]
-            right_col.plotly_chart(bars, use_container_width=True)
+            bars = plot_categ_bars(data, var, select_id)[0]
+            st.plotly_chart(bars, use_container_width=True)
+        
+        
+        #
+        #Explication du graphique
+        graph_exp = st.beta_expander("Plus d'informations à propos de ce \
+                                         graphique")
+        graph_exp.write("_Le client appartient à la classe correspondant à la barre colorée en violet.\
+                        La hauteur d'une barrre est égale\
+                        au taux moyen de défaut de paiement des individus appartenant à cette classe.\
+                        Cela permet de comprendre pourquoi pourquoi le modèle attribue un impact positif, ou \
+                        négatif à cette variable_")
+       
+        
+        
+    #--------------------------------------------------------------------------
+    ### Informations relatives au client
+    #--------------------------------------------------------------------------
+    
+    if radio == 'Informations relatives au client':
+        st.header("__Affichage de quelques informations relatives au client__")
+        st.subheader("Voici quelques statistiques.\
+                     Pour chaque variable, il est possible d'afficher le __taux \
+                     de difficulté de paiement par groupe__, ainsi que __la distribution\
+                      d'individus par groupe__ ")
+        st.write('Sur chaque graphique, le client sera représenté en violet, \
+                 et la moyenne du taux global de défaut de paiement en orange')
+        
+        variables = load_data().columns
+        
+        
+        var_list = ['CODE_GENDER', 'DAYS_EMPLOYED', 'RATIO_ANNUITY_CREDIT']
+        
+        chosen_vars = st.multiselect('Choix des variables à modifier',
+                                     variables,
+                                     var_list)
+        
+        data = load_data()
+        
+        for i, var in enumerate(chosen_vars):
+            st.subheader(f'Statistiques sur la variable {var}')
+            left_col, right_col = st.beta_columns(2)
+            
+            if data[var].dtype == 'float64' and data[var].nunique() > 10:
+            
+                #Selection du nombre de top variables à afficher pour le waterfall plot
+                n_bins = left_col.slider(
+                        "Nombre de barres du graphique ci-dessous",
+                        min_value=3,
+                        max_value=30,
+                        value=10,
+                        step=1,
+                        help="Sélectionnez entre 3 et 30 barres à afficher",
+                        key= str(i)
+                        )
+                
+                #Affichage du graphique taux de difficulté
+                bars = plot_bars(data, var, select_id, n_bins=n_bins+1)
+                left_col.plotly_chart(bars, use_container_width=True)
+                
+                #Selection du nombre de top variables à afficher pour le waterfall plot
+                n_bins = right_col.slider(
+                        "Nombre de barres du graphique ci-dessous",
+                        min_value=3,
+                        max_value=30,
+                        value=10,
+                        step=1,
+                        help="Sélectionnez entre 3 et 30 barres à afficher",
+                        key= 'dist'+str(i)
+                        )
+                #Affichage du graphique distribution 
+                dist = plot_distribution(data, var, select_id, n_bins=n_bins)
+                right_col.plotly_chart(dist, use_container_width=True)
+            
+            else:
+                #Affichage du graphique taux de difficulté
+                bars = plot_categ_bars(data, var, select_id)[0]
+                left_col.plotly_chart(bars, use_container_width=True)
+                
+                #Affichage du graphique distribution 
+                rep = plot_repartition(data, var, select_id)
+                right_col.plotly_chart(rep, use_container_width=True)
+                
+            
+    
+    #--------------------------------------------------------------------------
+    ### Modification des paramètres
+    #--------------------------------------------------------------------------
+    
+    if radio == 'Modification des paramètres':
+        st.header("__Et si on modifiait a valeur de quelques variables ?__")
+        st.subheader('Il est possible de mofifier certaines variables relatives au client sélectionné.\
+                 Nous pourrons ainsi visualiser une nouvelle prédiction personalisée')
+        variables = load_data().columns
+        var_list = ['CODE_GENDER', 'DAYS_EMPLOYED', 'RATIO_ANNUITY_CREDIT',
+                    'NAME_EDUCATION_TYPE']
+        chosen_vars = st.multiselect('Choix des variables à modifier',
+                                     variables,
+                                     var_list)
+        var_dict = {}
+        for i, var in enumerate(chosen_vars):
+            val = get_value(select_id, var)
+            st.write(f'Valeur originale de {var}: {round(val,2)}')
+            
+            if np.isnan(val):
+                 var_dict[var] = st.slider(
+                        f"Modifiez la valeur de {var}",
+                        min_value=load_data()[var].min(),
+                        max_value=load_data()[var].max(),
+                        value=np.float(load_data()[var].median())
+                        )
+            
+            elif isinstance(val, float):
+                var_dict[var] = st.slider(
+                        f"Modifiez la valeur de {var}",
+                        min_value=load_data()[var].min(),
+                        max_value=load_data()[var].max(),
+                        value=np.float(val)
+                        )
+                
+            elif isinstance(val, np.integer):
+                var_dict[var] = st.slider(
+                        f"Modifiez la valeur de {var}",
+                        min_value=int(load_data()[var].min()),
+                        max_value=int(load_data()[var].max()),
+                        value=int(val),
+                        step=1
+                        )
+        
 
+        left_col, right_col = st.beta_columns(2)
+        
+        #Prédiction sans modification
+        left_col.header('Prédiction sans modification:')
+        #Récpération de la probabilité de difficulté de paiement originale
+        default_proba = int(100*(1-get_score(select_id)))
+        left_fig = default_gauge(default_proba)
+        #Jauge de probabilité de difficulté de paiement
+        left_col.plotly_chart(left_fig, use_container_width=True)
+        #Waterfall Plot sans mofications
+        left_col.header('__Interprétabilité de la prédiction sans modification__')
+        #Selection du nombre de top variables à afficher pour le waterfall plot
+        n_feats_left = left_col.slider(
+                "Nombre de variables les plus influentes sur la prédiction du modèle",
+                min_value=5,
+                max_value=30,
+                value=10,
+                step=1,
+                help="Sélectionnez entre 5 et 30 variables à afficher"
+                ) 
+        #Affichage du waterfall plot pour l'interprétabilité de la prédiction
+        shap_series = get_shap_values(select_id)
+        wat_fig_l = plotly_waterfall(select_id, shap_series, n_feats=n_feats_left)[0]
+        left_col.plotly_chart(wat_fig_l, use_container_width=True)
+        
+        
+        #Prédiction avec modifications
+        right_col.header('Prédiction avec modifications:')
+        with st.spinner('Prédiction en cours...'):
+            def_proba_modif, X = predict_modified(load_data(), var_dict, select_id, path)
+            right_fig = default_gauge(int(100*def_proba_modif))
+            #Jauge de probabilité de difficulté de paiement
+            right_col.plotly_chart(right_fig, use_container_width=True)
+            #Waterfall Plot avec mofications
+            right_col.header('__Interprétabilité de la prédiction avec modifications__')
+            #Selection du nombre de top variables à afficher pour le waterfall plot
+            n_feats_right = right_col.slider(
+                    "Nombre de variables les plus influentes sur la prédiction du modèle",
+                    min_value=5,
+                    max_value=30,
+                    value=10,
+                    step=1,
+                    help="Sélectionnez entre 5 et 30 variables à afficher",
+                    key='left_slider'
+                    ) 
+            #Affichage du waterfall plot pour l'interprétabilité de la prédiction
+            shap_series_bis = get_shap_values(select_id)
+            shap_modif = transform_shap(def_proba_modif, X, path)
+            
+            wat_fig_r, var_list = plotly_waterfall(select_id,
+                                         shap_series_bis,
+                                         n_feats=n_feats_right,
+                                         shap_modif=shap_modif
+                                         )
+            right_col.plotly_chart(wat_fig_r, use_container_width=True)
+        
+        
+    
+    #st.write('ok')
 if __name__ == '__main__':
     main()
