@@ -1,7 +1,6 @@
 # Projet7 - Création d'un Dashboard interactif - Scoring pour l'accord d'un crédit à un client - Base de données Home Credit
-##L'outil développé est un dashboard disponible à cette adresse: 
-
-#https://dashboard-prevot.herokuapp.com/
+## L'outil développé est un dashboard disponible à cette adresse: 
+# https://dashboard-prevot.herokuapp.com/
 
 ## Contexte
 Vous êtes Data Scientist au sein d'une société financière, nommée "Prêt à dépenser",  qui propose des crédits à la consommation pour des personnes ayant peu ou pas du tout d'historique de prêt.
